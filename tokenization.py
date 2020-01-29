@@ -23,6 +23,7 @@ import re
 import unicodedata
 import six
 import tensorflow as tf
+import sentencepiece as spm
 
 
 def validate_case_matches_checkpoint(do_lower_case, init_checkpoint):
@@ -130,6 +131,11 @@ def load_vocab(vocab_file):
       token = token.strip()
       vocab[token] = index
       index += 1
+  for special_token in ['[PAD]','[UNK]','[CLS]','[SEP]','[MASK]']:
+    token = convert_to_unicode(special_token)
+    if token not in vocab:
+      vocab[token] = index
+      index += 1
   return vocab
 
 
@@ -161,18 +167,26 @@ def whitespace_tokenize(text):
 class FullTokenizer(object):
   """Runs end-to-end tokenziation."""
 
-  def __init__(self, vocab_file, do_lower_case=True):
+  def __init__(self, vocab_file, do_lower_case=True,
+               piece='word', piece_model=None):
     self.vocab = load_vocab(vocab_file)
     self.inv_vocab = {v: k for k, v in self.vocab.items()}
     self.basic_tokenizer = BasicTokenizer(do_lower_case=do_lower_case)
-    self.wordpiece_tokenizer = WordpieceTokenizer(vocab=self.vocab)
+    self.piece = piece
+    if self.piece == 'sentence':
+      self.sentencepiece_tokenizer = SentencePieceTokenizer(model=piece_model, do_lower_case=do_lower_case)
+    else: # Default to WordPiece
+      self.wordpiece_tokenizer = WordpieceTokenizer(vocab=self.vocab)
 
   def tokenize(self, text):
     split_tokens = []
-    for token in self.basic_tokenizer.tokenize(text):
-      for sub_token in self.wordpiece_tokenizer.tokenize(token):
-        split_tokens.append(sub_token)
-
+    if self.piece == 'sentence':
+      text = ' '.join(whitespace_tokenize(text))
+      split_tokens = self.sentencepiece_tokenizer.tokenize(text)
+    else:
+      for token in self.basic_tokenizer.tokenize(text):
+        for sub_token in self.wordpiece_tokenizer.tokenize(token):
+          split_tokens.append(sub_token)
     return split_tokens
 
   def convert_tokens_to_ids(self, tokens):
@@ -295,6 +309,37 @@ class BasicTokenizer(object):
       else:
         output.append(char)
     return "".join(output)
+
+
+class SentencePieceTokenizer(object):
+  """Runs Google's SentencePiece tokenization."""
+  def __init__(self, model, unk_token="[UNK]", do_lower_case=True):
+    self.sp = spm.SentencePieceProcessor()
+    self.sp.Load(model)
+    self.unk_token = unk_token
+    self.do_lower_case = do_lower_case
+
+  def tokenize(self, text):
+    output_tokens = []
+    unk_id = self.sp.unk_id()
+    if self.do_lower_case:
+        text = text.lower()
+    for t in self.sp.EncodeAsPieces(text):
+        id = self.sp.PieceToId(t)
+        if id == unk_id:
+            t = self.unk_token
+        elif t == "<unk>":
+            t = self.unk_token
+        elif t.startswith("▁"):
+            t = t[1:]
+        elif t.startswith("["):
+            pass
+        elif t.startswith("<"):
+            continue
+        else:
+            t = "##"+t
+        output_tokens.append(t)
+    return output_tokens
 
 
 class WordpieceTokenizer(object):
